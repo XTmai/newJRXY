@@ -4,14 +4,13 @@
 schoolName: 示例大学
 
 # 校区坐标（高德/百度地图获取）
-# 注意：当前为占位坐标，需自行校准准确经纬度，否则签到可能被判越界
 campuses:
-  主校区:
-    lon: '111.32'
-    lat: '30.72'
+  新校区:
+    lon: '0.0'
+    lat: '0.0'
 
 # 默认校区
-defaultCampus: 主校区
+defaultCampus: 新校区
 
 # 加密密钥（动态跟踪 从 9.9.20 版本提取）
 # AES key 已通过 动态跟踪 SecretKeySpec 确认: AES/ECB/PKCS7Padding

@@ -64,8 +64,7 @@ BASE_UA = ('Mozilla/5.0 (Linux; Android 14; 23127PN0CC Build/AP2A.240705.005; wv
 # ==================== 默认校区坐标 ====================
 
 DEFAULT_CAMPUSES = {
-    '昆仑校区': {'lon': '87.5927', 'lat': '43.8327'},
-    '温泉校区': {'lon': '87.7056', 'lat': '43.8014'},
+    '新校区': {'lon': '0.0', 'lat': '0.0'},
 }
 
 
@@ -215,7 +214,7 @@ class CpdailyClient:
             for key in ('campus_host', 'login_host', 'cas_login_url', 'join_type'):
                 if key in data and data[key]:
                     setattr(self, key, data[key])
-            self.campus = data.get('campus', self.campus)
+            # 校区以 config.yml 为准，不覆盖（旧会话文件可能残留旧校区名）
 
             if self.campus_host:
                 return True

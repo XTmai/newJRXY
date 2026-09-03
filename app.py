@@ -3,7 +3,7 @@
 薄GUI层，业务逻辑委托给core.CpdailyClient
 """
 import tkinter as tk
-from tkinter import ttk, messagebox, filedialog
+from tkinter import ttk, messagebox, filedialog, simpledialog
 import threading
 import os
 import uuid
@@ -82,11 +82,25 @@ class App:
         body = tk.Frame(card, bg=COLOR_CARD)
         body.pack(fill='x', pady=6)
 
-        # 左侧：二维码
+        # 左侧：认证区（NOTCLOUD=二维码 / CLOUD=账号密码）
         left = tk.Frame(body, bg=COLOR_CARD)
         left.pack(side='left', fill='y')
+
         self.qr_label = tk.Label(left, bg=COLOR_CARD)
         self.qr_label.pack(pady=(10, 0))
+
+        # CLOUD/IAP 账号密码表单
+        self.iap_frame = tk.Frame(left, bg=COLOR_CARD)
+        tk.Label(self.iap_frame, text='学号/工号', font=FONT_SMALL, bg=COLOR_CARD,
+                 fg=COLOR_TEXT).pack(anchor='w')
+        self.entry_user = tk.Entry(self.iap_frame, font=FONT_NORMAL, width=20)
+        self.entry_user.pack(pady=(2, 6))
+        tk.Label(self.iap_frame, text='密码', font=FONT_SMALL, bg=COLOR_CARD,
+                 fg=COLOR_TEXT).pack(anchor='w')
+        self.entry_pass = tk.Entry(self.iap_frame, font=FONT_NORMAL, width=20, show='*')
+        self.entry_pass.pack(pady=(2, 8))
+        self.entry_pass.bind('<Return>', lambda _e: self.start_login())
+
         self.btn_login = tk.Button(left, text='📱 扫码登录', font=FONT_NORMAL,
                                    bg=COLOR_PRIMARY, fg='white', relief='flat',
                                    activebackground=COLOR_PRIMARY_LIGHT,
@@ -262,6 +276,17 @@ class App:
         """更新登录状态"""
         self.root.after(0, lambda: self.login_status.set(text))
 
+    def _apply_login_mode(self):
+        """按 joinType 切换登录方式 UI（CLOUD=账号密码 / 其他=扫码）"""
+        if self.client.join_type == 'CLOUD':
+            self.qr_label.pack_forget()
+            self.iap_frame.pack(pady=(10, 0))
+            self.btn_login.configure(text='🔑 账号密码登录')
+        else:
+            self.iap_frame.pack_forget()
+            self.qr_label.pack(pady=(10, 0))
+            self.btn_login.configure(text='📱 扫码登录')
+
     def show_qr(self, path):
         try:
             img = Image.open(path).resize((180, 180))
@@ -342,6 +367,7 @@ class App:
             self.log(f'域名: {self.client.campus_host}')
             self.set_status('准备就绪，请登录')
             self.root.after(0, lambda: self.btn_login.configure(state='normal'))
+            self.root.after(0, self._apply_login_mode)
             if self.client.logged_in:
                 self.set_status('✅ 已登录（恢复会话）', is_ok=True)
                 self.root.after(0, lambda: self.btn_switch.configure(state='normal'))
@@ -369,16 +395,74 @@ class App:
         self.root.after(0, lambda: self.task_count_label.configure(text=''))
         self.root.after(0, lambda: self.btn_refresh.configure(state='disabled'))
         self.root.after(0, lambda: self.btn_switch.configure(state='disabled'))
-        self.root.after(0, lambda: self.btn_login.configure(state='normal', text='📱 扫码登录'))
+        self.root.after(0, lambda: self.btn_login.configure(state='normal'))
+        self.root.after(0, self._apply_login_mode)
         self.root.after(0, self.clear_qr)
         self.set_status('会话已清除，请重新登录')
-        self.log('已清除登录会话，请重新扫码登录')
+        self.log('已清除登录会话，请重新登录')
 
-    # ==================== 扫码登录 ====================
+    # ==================== 登录（扫码 / IAP 分流） ====================
 
     def start_login(self):
         if self.login_thread and self.login_thread.is_alive():
             return
+        if self.client.join_type == 'CLOUD':
+            self._start_iap_login()
+        else:
+            self._start_qr_login()
+
+    # -------- IAP 账号密码登录（CLOUD 学校） --------
+
+    def _start_iap_login(self):
+        user = self.entry_user.get().strip()
+        pwd = self.entry_pass.get()
+        if not user or not pwd:
+            messagebox.showwarning('提示', '请输入学号/工号和密码')
+            return
+        self.btn_login.configure(state='disabled', text='登录中...')
+        self.login_thread = threading.Thread(
+            target=self._do_iap_login, args=(user, pwd), daemon=True)
+        self.login_thread.start()
+
+    def _ask_captcha(self, img_bytes):
+        """验证码输入回调（在登录后台线程中调用，弹窗切回主线程）"""
+        import threading as _t
+        with open('captcha.png', 'wb') as f:
+            f.write(img_bytes)
+        result, event = {}, _t.Event()
+
+        def _ask():
+            code = simpledialog.askstring(
+                '验证码', '验证码图片已保存到项目目录 captcha.png\n'
+                '请打开查看后输入验证码:', parent=self.root)
+            result['code'] = code or ''
+            event.set()
+
+        self.root.after(0, _ask)
+        event.wait(timeout=120)
+        return result['code'].strip()
+
+    def _do_iap_login(self, user, pwd):
+        try:
+            self.set_status('正在登录...')
+            self.log(f'使用 IAP 账号密码登录: {user}')
+            self.client.login_iap(user, pwd, captcha_prompt=self._ask_captcha)
+            self.set_status('✅ 登录成功', is_ok=True)
+            self.log('✅ 登录成功!')
+            self.root.after(0, lambda: self.btn_login.configure(
+                state='disabled', text='✅ 已登录'))
+            self.root.after(0, lambda: self.btn_switch.configure(state='normal'))
+            self.root.after(0, lambda: self.btn_refresh.configure(state='normal'))
+            self.refresh_tasks()
+        except Exception as e:
+            self.log(f'登录失败: {e}')
+            self.set_status('登录失败', is_err=True)
+            self.root.after(0, lambda: self.btn_login.configure(
+                state='normal', text='🔑 账号密码登录'))
+
+    # -------- 扫码登录（NOTCLOUD 学校） --------
+
+    def _start_qr_login(self):
         self.btn_login.configure(state='disabled', text='登录中...')
         self.login_thread = threading.Thread(target=self._do_login, daemon=True)
         self.login_thread.start()
