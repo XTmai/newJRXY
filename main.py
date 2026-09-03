@@ -13,7 +13,8 @@ def main():
         prog='python main.py',
         description='今日校园查寝签到工具 - 命令行版',
         epilog='示例:\n'
-               '  python main.py login              # 扫码登录\n'
+               '  python main.py login                    # 扫码登录(微信/账号体系学校)\n'
+               '  python main.py login --user 学号 --password 密码   # IAP账号密码登录\n'
                '  python main.py list               # 列出今日任务\n'
                '  python main.py sign --index 0     # 签到第一个未签任务\n'
                '  python main.py sign --name "晚间"  # 按任务名签到\n'
@@ -27,7 +28,9 @@ def main():
     sub = parser.add_subparsers(dest='command', required=True)
 
     # login
-    sub.add_parser('login', help='扫码登录')
+    login_p = sub.add_parser('login', help='登录')
+    login_p.add_argument('--user', type=str, default=None, help='学号/工号（IAP账号密码登录）')
+    login_p.add_argument('--password', type=str, default=None, help='登录密码（IAP账号密码登录）')
 
     # list
     sub.add_parser('list', help='列出今日查寝任务')
@@ -57,9 +60,25 @@ def main():
     # ===== login =====
     if args.command == 'login':
         if args.headless:
-            print('[ERROR] headless模式下无法扫码登录，请先运行 python main.py login')
+            print('[ERROR] headless模式下无法交互登录，请先直接运行 python main.py login')
             sys.exit(1)
 
+        # CLOUD 学校：IAP 账号密码登录
+        if client.join_type == 'CLOUD':
+            if not args.user or not args.password:
+                print('[ERROR] 该学校使用 IAP 账号密码登录，请提供 --user 和 --password:')
+                print('        python main.py login --user 学号 --password 密码')
+                sys.exit(1)
+            print(f'[INFO] 正在使用 IAP 账号密码登录 {client.school_name} ...')
+            try:
+                client.login_iap(args.user, args.password)
+                print('[SUCCESS] 登录成功!')
+            except Exception as e:
+                print(f'[ERROR] 登录失败: {e}')
+                sys.exit(1)
+            return
+
+        # 其他学校：扫码登录
         print('[INFO] 正在生成二维码...')
         try:
             uuid, img_bytes = client.get_qr_image()

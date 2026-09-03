@@ -17,6 +17,7 @@ from bs4 import BeautifulSoup
 from pyDes import des, CBC, PAD_PKCS5
 from Crypto.Cipher import AES
 from requests_toolbelt import MultipartEncoder
+from iap_login import IAPLogin
 
 requests.packages.urllib3.disable_warnings(requests.packages.urllib3.exceptions.InsecureRequestWarning)
 
@@ -93,6 +94,7 @@ class CpdailyClient:
         self.login_host = None    # https://authserver.xjnu.edu.cn/
         self.cas_login_url = None # CAS登录页完整URL
         self.school_id = None
+        self.join_type = None      # CLOUD(IAP账号密码) / NOTCLOUD(扫码) 等
         self.logged_in = False
 
     # -------- 日志钩子（外部可覆盖） --------
@@ -117,7 +119,8 @@ class CpdailyClient:
         for item in schools:
             if item['name'] == self.school_name:
                 self.school_id = item['id']
-                self.log(f'学校: {self.school_name}, joinType: {item["joinType"]}')
+                self.join_type = item.get('joinType')
+                self.log(f'学校: {self.school_name}, joinType: {self.join_type}')
                 break
         else:
             raise Exception(f'未找到学校: {self.school_name}')
@@ -164,6 +167,7 @@ class CpdailyClient:
                 'cas_login_url': self.cas_login_url,
                 'school_name': self.school_name,
                 'campus': self.campus,
+                'join_type': self.join_type,
                 'saved_at': datetime.now().isoformat(),
             }
             with open(self.cookie_file, 'w', encoding='utf-8') as f:
@@ -204,11 +208,13 @@ class CpdailyClient:
                 )
                 self.session.cookies.set_cookie(cookie)
 
-            # 恢复状态（含设备ID）
+            # 恢复状态（含设备ID）。
+            # 仅恢复文件中存在的键：避免把 init_school 刚解析的 campus_host/login_host
+            # 等覆盖成 None（旧版会话文件可能没有这些键）。
             self.device_id = data.get('device_id', self.device_id)
-            self.campus_host = data.get('campus_host')
-            self.login_host = data.get('login_host')
-            self.cas_login_url = data.get('cas_login_url')
+            for key in ('campus_host', 'login_host', 'cas_login_url', 'join_type'):
+                if key in data and data[key]:
+                    setattr(self, key, data[key])
             self.campus = data.get('campus', self.campus)
 
             if self.campus_host:
@@ -330,6 +336,21 @@ class CpdailyClient:
             if on_status:
                 on_status(f'登录失败')
             return False, b''
+
+    # -------- IAP 账号密码登录（joinType=CLOUD） --------
+
+    def login_iap(self, username, password, captcha_prompt=None):
+        """
+        IAP 统一认证登录（明文密码，完整跟随 CAS 重定向链）。
+        成功返回 True 并落地会话；失败抛异常。
+        """
+        self.log(f'正在使用 IAP 登录 {self.school_name} ...')
+        iap = IAPLogin(self.session, self.campus_host, username, password, on_log=self.log)
+        iap.login(captcha_prompt=captcha_prompt)
+        self.logged_in = True
+        self._save_session()
+        self.log('✅ 会话已保存')
+        return True
 
     # -------- 任务操作 --------
 
