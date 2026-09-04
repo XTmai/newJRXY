@@ -8,6 +8,13 @@ import os
 from core import CpdailyClient
 
 
+def input_captcha(img_bytes):
+    """CLI 验证码回调：保存图片并让用户输入"""
+    with open('captcha.png', 'wb') as f:
+        f.write(img_bytes)
+    return input('[IAP] 验证码图片已保存为 captcha.png，请输入验证码: ').strip()
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog='python main.py',
@@ -71,7 +78,7 @@ def main():
                 sys.exit(1)
             print(f'[INFO] 正在使用 IAP 账号密码登录 {client.school_name} ...')
             try:
-                client.login_iap(args.user, args.password)
+                client.login_iap(args.user, args.password, captcha_provider=input_captcha)
                 print('[SUCCESS] 登录成功!')
             except Exception as e:
                 print(f'[ERROR] 登录失败: {e}')

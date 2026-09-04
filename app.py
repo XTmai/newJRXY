@@ -387,7 +387,9 @@ class App:
         self.client.logged_in = False
         self.client.session = requests.session()
         self.client.session.headers = {'User-Agent': BASE_UA}
-        self.client.device_id = str(uuid.uuid4())
+        # 设备ID固定为真机值，避免触发"更换手机频繁"风控
+        self.client.device_id = IOS_DEVICE_ID
+        self.client.user_id = None
 
         # 恢复UI状态
         self.current_tasks = []
@@ -446,7 +448,7 @@ class App:
         try:
             self.set_status('正在登录...')
             self.log(f'使用 IAP 账号密码登录: {user}')
-            self.client.login_iap(user, pwd, captcha_prompt=self._ask_captcha)
+            self.client.login_iap(user, pwd, captcha_provider=self._ask_captcha)
             self.set_status('✅ 登录成功', is_ok=True)
             self.log('✅ 登录成功!')
             self.root.after(0, lambda: self.btn_login.configure(

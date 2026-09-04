@@ -72,34 +72,37 @@ python app.py
 ## 项目结构
 
 ```
-├── core.py             # 业务核心（加密、登录分流、任务、签到）
-├── iap_login.py        # IAP 统一认证登录（明文提交 + 完整重定向跟随）
+├── core.py             # 业务核心（加密、登录分流、iOS first_v4 提交）
+├── iap_login.py        # IAP 统一认证登录（RSA 密码加密）
 ├── app.py              # tkinter 桌面版
 ├── main.py             # 命令行版
 ├── config.yml          # 配置（学校、校区、密钥）
-├── key_extract/        # 脚本 脚本（本地 arm64 AVD 用）
+├── key_extract/        # gsk_client 领钥、脚本 脚本、逆向文档
 ├── .session_cookies.json  # 登录会话文件（自动生成，勿提交）
 └── requirements.txt
 ```
 
 ## 已适配与验证
 
-- ✅ joinType=CLOUD 识别，IAP 账号密码登录跑通（明文提交 + CAS 重定向链签发 MOD_AUTH_CAS）
+- ✅ joinType=CLOUD 识别，IAP 登录跑通（RSA-1024 密码加密 + 换 MOD_AUTH_CAS 票）
 - ✅ 会话落盘与复用（CONVERSATION / CASTGC / MOD_AUTH_CAS）
 - ✅ 任务列表接口连通
-- ✅ AES 密钥更新为 9.9.20 版本（`abcdfe0987612345`，ECB/PKCS7Padding，来自 PR #3）
+- ✅ **iOS first_v4 签到协议**（9.9.22）：bodyString=AES-128-CBC-PKCS7，key=interleave(`REDACTED`+服务器catSecret)，IV=原始字节 `01..09 01..07`；服务器实弹验证解密成功（见《02_协议数据与使用指南.md》）
 - ✅ 校区坐标已配置：新校区 `0.0, 0.0`
-- ⚠️ **DES key 待验证**：暂保留 `XCE927==`。若签到返回「版本过低」，需用 `key_extract/redacted_script.js` 在本地 arm64 环境提新 key
+- ⚠️ **设备授权风控**：提交进入业务层后返回"更换手机频繁/设备授权"（管理措施），需辅导员在辅导猫后台「手机授权管理」为本机授权，或真机正常使用一段时间自动解除
 
 ## 技术说明
 
 | 项目 | 说明 |
 |------|------|
-| 登录方式 | CLOUD：`/iap/doLogin` 明文密码 + 完整重定向跟随；NOTCLOUD：CAS 扫码 |
-| 加密方式 | AES-ECB (`abcdfe0987612345`) + DES (`XCE927==`) + MD5 签名 |
-| APP 版本 | cpdaily/wisedu 9.9.20 |
-| 定位方式 | 校区固定经纬度 + 随机微偏 |
+| 登录方式 | CLOUD：`/iap/doLogin` RSA 加密密码（`{rsa}`+base64）+ form body + deviceId/fingerprintId 头；NOTCLOUD：CAS 扫码 |
+| 签到协议 | iOS first_v4（`version=first_v4`, `calVersion=firstv`），AES-128-CBC-PKCS7 + interleave key + 真机指纹头 |
+| 密钥派生 | `final_cat_secret`：本地常量 `REDACTED` + 服务器 `catSecret`（本校恒为 `REDACTED`）奇偶位交错 → `REDACTED` |
+| APP 版本 | cpdaily/wisedu 9.9.22（iOS） |
+| 定位方式 | 校区固定经纬度（围栏内，不微偏，避免越界） |
 | 会话有效期 | 7 天 |
+
+> 逆向过程原始记录见 `key_extract/` 与《01/02/03_*.md》文档。
 
 ## 项目演化史
 

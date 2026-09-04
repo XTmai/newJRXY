@@ -17,9 +17,69 @@ from bs4 import BeautifulSoup
 from pyDes import des, CBC, PAD_PKCS5
 from Crypto.Cipher import AES
 from requests_toolbelt import MultipartEncoder
-from iap_login import IAPLogin
 
 requests.packages.urllib3.disable_warnings(requests.packages.urllib3.exceptions.InsecureRequestWarning)
+
+# ==================== iOS first_v4 协议（逆向自 iOS CampusNext 9.9.22，已服务器验证） ====================
+# 链路: CDVMAMPHttp.sendEncryptPostRequest -> CryptUtil.aesEncryptForCat
+#       -> EncryptConstant.finalCatSecret -> CNAESCrypt.aesEncrypt:key:
+# finalCatSecret = interleave(ConstantKeyCrypt.localDisCatSecret + NSUserDefaults["catSecretKey"])
+#   其中 catSecretKey = getSecretKey 响应中的 catSecret（按租户固定）
+# AES: CCCrypt(AES128, CBC, PKCS7), keyLength=16, IV=原始字节 01..09,01..07
+try:
+    import sys as _sys
+    _sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'key_extract'))
+    from gsk_client import GskClient as _GskClient
+    HAS_GSK = True
+except Exception:
+    HAS_GSK = False
+
+IOS_LOCAL_CAT_SECRET = 'REDACTED'          # XOR-0xbb 混淆提取（distribution 构建）
+IOS_AES_IV = bytes(range(1, 10)) + bytes(range(1, 8))   # 静态 IV @0x103b4f990
+IOS_DEVICE_ID = '00000000-0000-0000-0000-000000000000'  # 真机抓包（服务器按此绑定设备）
+IOS_WIS_DEVICE_ID = ('enc.app.aeb.v1.REDACTED/REDACTED/'
+                     'REDACTED')             # 真机设备指纹头
+IOS_UA = ('Mozilla/5.0 (iPhone; CPU iPhone OS 18_2 like Mac OS X) '
+          'AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 '
+          'cpdaily/9.9.22 wisedu/9.9.22')
+IOS_APP_VERSION = '9.9.22'
+IOS_SYSTEM_VERSION = '18.2'
+IOS_MODEL = 'iPhone 16 Pro'
+
+
+def final_cat_secret(server_cat, local=IOS_LOCAL_CAT_SECRET):
+    """EncryptConstant.finalCatSecret: s=A+B -> 偶数位字符在前 + 奇数位在后"""
+    s = local + server_cat
+    return s[0::2] + s[1::2]
+
+
+def aes_v4_encrypt(data, key):
+    """AES-128-CBC-PKCS7, 输出 base64（服务器已确认可解密）"""
+    if isinstance(data, str):
+        data = data.encode('utf-8')
+    pad_len = 16 - (len(data) % 16)
+    data = data + bytes([pad_len]) * pad_len
+    ct = AES.new(key.encode(), AES.MODE_CBC, IOS_AES_IV).encrypt(data)
+    return base64.b64encode(ct).decode()
+
+
+# 服务器密钥兜底缓存（实测本校按租户恒定：cpdailySecret=REDACTED, catSecret=REDACTED）
+FALLBACK_SECRETS = {'cpdailySecret': 'REDACTED', 'catSecret': 'REDACTED'}
+
+
+def fetch_v4_secrets():
+    """领 first_v4 密钥，返回 (cpdailySecret, catSecret)。
+    优先实时 getSecretKey；证书缺失或请求失败时回退缓存常量。"""
+    try:
+        if not HAS_GSK:
+            raise RuntimeError('gsk_client 不可用')
+        sec = _GskClient().fetch_secrets()
+        if sec.get('catSecret'):
+            return sec['cpdailySecret'], sec['catSecret']
+    except Exception as e:
+        _sys.stderr.write(f'fetch_v4_secrets fallback: {e}\n')
+    return FALLBACK_SECRETS['cpdailySecret'], FALLBACK_SECRETS['catSecret']
+
 
 # ==================== 加密函数 ====================
 
@@ -64,7 +124,8 @@ BASE_UA = ('Mozilla/5.0 (Linux; Android 14; 23127PN0CC Build/AP2A.240705.005; wv
 # ==================== 默认校区坐标 ====================
 
 DEFAULT_CAMPUSES = {
-    '新校区': {'lon': '0.0', 'lat': '0.0'},
+    '昆仑校区': {'lon': '87.5927', 'lat': '43.8327'},
+    '温泉校区': {'lon': '87.7056', 'lat': '43.8014'},
 }
 
 
@@ -75,25 +136,30 @@ class CpdailyClient:
 
     def __init__(self, school_name='新疆师范大学', campus='昆仑校区',
                  des_key='XCE927==', aes_key='abcdfe0987612345',
-                 cookie_file='.session_cookies.json'):
+                 cookie_file='.session_cookies.json', sign_version='first_v4'):
         self.school_name = school_name
         self.campus = campus
         self.des_key = des_key
         self.aes_key = aes_key
         self.cookie_file = cookie_file
+        # 加密协议版本：示例大学等学校已禁用 first_v3（旧 key），须用 first_v4
+        self.sign_version = sign_version
+        # 协议实现: ios_v4 = iOS 9.9.22 逆向方案（服务器已验证）；android = 旧 ECB 方案
+        self.protocol = 'ios_v4'
         self.campuses = dict(DEFAULT_CAMPUSES)
 
         self.session = requests.session()
         self.session.headers = {'User-Agent': BASE_UA}
 
-        # 固定设备ID，每次签到复用，不重新生成
-        self.device_id = str(uuid.uuid1())
+        # iOS 协议: 固定使用真机抓包 deviceId（服务器把账号与设备绑定，频繁变化会触发风控）
+        self.device_id = IOS_DEVICE_ID
+        self.user_id = ''
 
-        self.campus_host = None   # https://xjnu.campusphere.net/
-        self.login_host = None    # https://authserver.xjnu.edu.cn/
+        self.campus_host = None   # https://example.campusphere.net/
+        self.login_host = None    # CAS学校为独立认证域名
         self.cas_login_url = None # CAS登录页完整URL
         self.school_id = None
-        self.join_type = None      # CLOUD(IAP账号密码) / NOTCLOUD(扫码) 等
+        self.join_type = None     # NOTCLOUD=扫码登录 / CLOUD=IAP账号密码登录
         self.logged_in = False
 
     # -------- 日志钩子（外部可覆盖） --------
@@ -118,8 +184,8 @@ class CpdailyClient:
         for item in schools:
             if item['name'] == self.school_name:
                 self.school_id = item['id']
-                self.join_type = item.get('joinType')
-                self.log(f'学校: {self.school_name}, joinType: {self.join_type}')
+                self.join_type = item['joinType']
+                self.log(f'学校: {self.school_name}, joinType: {item["joinType"]}')
                 break
         else:
             raise Exception(f'未找到学校: {self.school_name}')
@@ -161,12 +227,12 @@ class CpdailyClient:
                     for c in self.session.cookies
                 ],
                 'device_id': self.device_id,
+                'user_id': self.user_id,
                 'campus_host': self.campus_host,
                 'login_host': self.login_host,
                 'cas_login_url': self.cas_login_url,
                 'school_name': self.school_name,
                 'campus': self.campus,
-                'join_type': self.join_type,
                 'saved_at': datetime.now().isoformat(),
             }
             with open(self.cookie_file, 'w', encoding='utf-8') as f:
@@ -207,16 +273,19 @@ class CpdailyClient:
                 )
                 self.session.cookies.set_cookie(cookie)
 
-            # 恢复状态（含设备ID）。
-            # 仅恢复文件中存在的键：避免把 init_school 刚解析的 campus_host/login_host
-            # 等覆盖成 None（旧版会话文件可能没有这些键）。
+            # 恢复状态（含设备ID）
             self.device_id = data.get('device_id', self.device_id)
-            for key in ('campus_host', 'login_host', 'cas_login_url', 'join_type'):
-                if key in data and data[key]:
-                    setattr(self, key, data[key])
-            # 校区以 config.yml 为准，不覆盖（旧会话文件可能残留旧校区名）
+            self.user_id = data.get('user_id', self.user_id)
+            if 'campus_host' in data:
+                self.campus_host = data['campus_host']
+            if 'login_host' in data:
+                self.login_host = data['login_host']
+            if 'cas_login_url' in data:
+                self.cas_login_url = data['cas_login_url']
+            # 校区以 config.yml 为准，不恢复会话里的旧校区名（避免配置被旧会话覆盖）
 
-            if self.campus_host:
+            # 只要有 cookie 即视为会话有效（campus_host 等由 init_school 重新获取）
+            if self.session.cookies:
                 return True
         except Exception as e:
             self.log(f'恢复会话失败: {e}')
@@ -336,20 +405,23 @@ class CpdailyClient:
                 on_status(f'登录失败')
             return False, b''
 
-    # -------- IAP 账号密码登录（joinType=CLOUD） --------
+    def login_iap(self, username, password, captcha_provider=None):
+        """CLOUD 学校：IAP 账号密码登录，返回是否成功
 
-    def login_iap(self, username, password, captcha_prompt=None):
+        :param captcha_provider: 验证码识别回调 f(image_bytes) -> str
         """
-        IAP 统一认证登录（明文密码，完整跟随 CAS 重定向链）。
-        成功返回 True 并落地会话；失败抛异常。
-        """
-        self.log(f'正在使用 IAP 登录 {self.school_name} ...')
-        iap = IAPLogin(self.session, self.campus_host, username, password, on_log=self.log)
-        iap.login(captcha_prompt=captcha_prompt)
-        self.logged_in = True
-        self._save_session()
-        self.log('✅ 会话已保存')
-        return True
+        if self.join_type == 'NOTCLOUD':
+            raise Exception(f'当前学校 joinType=NOTCLOUD，请使用扫码登录')
+
+        from iap_login import IapLogin
+        login = IapLogin(username, password, self.campus_host, self.session,
+                         on_log=self.log, captcha_provider=captcha_provider)
+        ok = login.login()
+        if ok:
+            self.logged_in = True
+            self.user_id = username      # iOS 协议提交体需要 userId
+            self._save_session()
+        return ok
 
     # -------- 任务操作 --------
 
@@ -493,6 +565,94 @@ class CpdailyClient:
 
         # 3. 加密提交
         self.log('正在加密并提交签到...')
+        if self.protocol == 'ios_v4':
+            return self._submit_ios_v4(form, lon, lat, address)
+        return self._submit_android(form, lon, lat, address)
+
+    def _submit_ios_v4(self, form, lon, lat, address):
+        """iOS first_v4 协议提交（逆向自 CampusNext 9.9.22，2026-09-03 服务器验证通过）"""
+        # 1) 领密钥并派生 finalCatSecret
+        self.log('正在获取 first_v4 会话密钥...')
+        _, server_cat = fetch_v4_secrets()
+        aes_key = final_cat_secret(server_cat)
+        self.log(f'finalCatSecret 已派生（cat={server_cat}）')
+
+        # 2) bodyString = AES-128-CBC-PKCS7(base64)
+        body_string = aes_v4_encrypt(json.dumps(form, ensure_ascii=False), aes_key)
+
+        # 3) 组装提交体（与 iOS 抓包结构一致）
+        session_token = self._session_token()
+        tenant_id = self.school_id or ''
+        submit_data = {
+            'lon': lon, 'version': 'first_v4', 'calVersion': 'firstv',
+            'deviceId': self.device_id, 'userId': self.user_id,
+            'systemName': 'iOS', 'bodyString': body_string,
+            'lat': lat, 'systemVersion': IOS_SYSTEM_VERSION,
+            'appVersion': IOS_APP_VERSION, 'model': IOS_MODEL,
+            # sign 拼接格式逆向未完全确定，但服务端不校验（假值同样放行）；
+            # 按最接近逆向语义的格式生成: 排序后 values 串联 + key
+            'sign': md5(''.join(sorted(str(v) for v in form.values())) + body_string + aes_key),
+        }
+
+        headers = {
+            'deviceType': '2',
+            'CpdailyClientType': 'CPDAILY',
+            'Accept': '*/*',
+            'CacheTimeValue': '0',
+            'wisDeviceId': IOS_WIS_DEVICE_ID,
+            'sessionTokenKey': session_token,
+            'Accept-Language': 'zh-Hans-CN',
+            'Content-Type': 'application/json',
+            'tenantId': tenant_id,
+            'User-Agent': IOS_UA,
+            'CpdailyStandAlone': '0',
+        }
+        # Cookie 必须包含登录票 MOD_AUTH_CAS（手动头会覆盖 session 自动携带，
+        # 少了它服务端直接当未登录返回 HTML 登录页）
+        cookie_parts = ['clientType=cpdaily_student', f'sessionToken={session_token}',
+                        'standAlone=0', f'tenantId={tenant_id}']
+        for c in self.session.cookies:
+            if c.name == 'MOD_AUTH_CAS':
+                cookie_parts.append(f'MOD_AUTH_CAS={c.value}')
+        headers['Cookie'] = '; '.join(cookie_parts)
+
+        self.log('正在发送签到请求(iOS v4)...')
+        raw_res = self.session.post(
+            self.campus_host + SIGN_API,
+            headers=headers,
+            data=json.dumps(submit_data, ensure_ascii=False),
+            verify=False, timeout=15
+        )
+        self.log(f'签到HTTP状态码: {raw_res.status_code}')
+        self.log(f'签到响应原文: {raw_res.text[:500]}')
+        try:
+            res = raw_res.json()
+        except ValueError:
+            # 返回 HTML = 会话失效（MOD_AUTH_CAS 过期/被风控），需重新登录
+            return {'success': False, 'message': '会话已失效（返回登录页），请重新登录'}
+        if '版本过低' in raw_res.text:
+            # 服务端解密失败的伪装报错——正常情况下不会出现（加密方案已服务器验证）
+            return {'success': False, 'message': '服务端解密失败（版本过低）'}
+
+        msg = res.get('message', '')
+        success = msg == 'SUCCESS'
+        if success:
+            self.log('✅ 签到成功!')
+        else:
+            self.log(f'❌ 签到失败: {msg}')
+
+        self._save_session()
+        return {'success': success, 'message': msg}
+
+    def _session_token(self):
+        """从会话 cookie 中取 sessionToken（iOS 原生头需要）"""
+        for c in self.session.cookies:
+            if c.name == 'sessionToken':
+                return c.value
+        return ''
+
+    def _submit_android(self, form, lon, lat, address):
+        """旧 Android 协议提交（保留备用）"""
         extension = {
             "lon": lon, "model": "23127PN0CC",
             "appVersion": "9.9.20", "systemVersion": "14",
@@ -505,7 +665,7 @@ class CpdailyClient:
         sign_form = dict(form)
         sign_form['bodyString'] = body_string
         submit_data = {
-            'version': 'first_v3',
+            'version': self.sign_version,
             'calVersion': 'firstv',
             'bodyString': body_string,
             'sign': md5(urllib.parse.urlencode(sign_form) + '&' + self.aes_key),
@@ -564,6 +724,7 @@ class CpdailyClient:
             des_key=cfg.get('desKey', 'XCE927=='),
             aes_key=cfg.get('aesKey', 'abcdfe0987612345'),
             cookie_file=cfg.get('cookieFile', '.session_cookies.json'),
+            sign_version=cfg.get('signVersion', 'first_v4'),
         )
         # 加载自定义校区坐标
         campuses = cfg.get('campuses', {})
