@@ -501,8 +501,23 @@ class CpdailyClient:
             verify=False, timeout=15).json()
         return r.get('datas', '')
 
-    def sign_task(self, task, campus=None, photo_path=''):
-        """签到指定任务，返回 {'success': bool, 'message': str}"""
+    @staticmethod
+    def _pick_pool_photo(photo_dir):
+        """从照片池目录随机选一张图片，返回路径；无效目录返回 ''"""
+        if not photo_dir or not os.path.isdir(photo_dir):
+            return ''
+        exts = ('.jpg', '.jpeg', '.png')
+        photos = [os.path.join(photo_dir, f) for f in os.listdir(photo_dir)
+                  if f.lower().endswith(exts)]
+        if not photos:
+            return ''
+        return random.choice(photos)
+
+    def sign_task(self, task, campus=None, photo_path='', photo_dir=None):
+        """签到指定任务，返回 {'success': bool, 'message': str}
+
+        :param photo_dir: 照片池目录；任务要照片且未指定 photo_path 时随机选一张
+        """
         if campus is None:
             campus = self.campus
         coords = self.campuses[campus]
@@ -529,8 +544,13 @@ class CpdailyClient:
 
         if task_detail.get('isPhoto') == 1:
             self.log('任务需要照片')
+            if not photo_path and photo_dir:
+                photo_path = self._pick_pool_photo(photo_dir)
+                if photo_path:
+                    self.log(f'照片池随机选图: {os.path.basename(photo_path)}')
             if not photo_path or not os.path.exists(photo_path):
-                return {'success': False, 'message': '该任务需要照片但未选择'}
+                msg = '该任务需要照片但照片池为空' if photo_dir else '该任务需要照片但未选择'
+                return {'success': False, 'message': msg}
             self.log('正在上传照片...')
             time.sleep(random.uniform(0.8, 1.5))
             fileName = self._upload_photo(photo_path)

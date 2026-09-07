@@ -6,3 +6,6 @@ __pycache__
 qrcode_login.png
 captcha.png
 config.yml
+auto_config.json
+auto_sign.log
+photos/
