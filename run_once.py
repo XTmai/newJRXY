@@ -27,7 +27,7 @@ if not PWD:
     import getpass
     PWD = getpass.getpass('密码: ')
 
-cli = CpdailyClient(school_name='示例大学', campus='新校区',
+cli = CpdailyClient(school_name='示例大学', campus='默认校区',
                     cookie_file='.session_cookies.json')
 cli.on_log = lambda m: print('[LOG]', m)
 

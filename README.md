@@ -18,7 +18,7 @@
 
 ## 适配学校
 
-- **示例大学** — 主校区（`example.campusphere.net`，CLOUD/IAP 账号密码登录）
+- **示例大学** — 默认校区（`example.campusphere.net`，CLOUD/IAP 账号密码登录）
 
 > 若需适配其他学校，修改 `config.yml` 的 `schoolName`，程序会自动识别 joinType 并选择登录方式。
 
@@ -105,7 +105,7 @@ python app.py
 - ✅ 会话落盘与复用（CONVERSATION / CASTGC / MOD_AUTH_CAS）
 - ✅ 任务列表接口连通
 - ✅ **iOS first_v4 签到协议**（9.9.22）：bodyString=AES-128-CBC-PKCS7，key=interleave(`REDACTED`+服务器catSecret)，IV=原始字节 `01..09 01..07`；服务器实弹验证解密成功（见《02_协议数据与使用指南.md》）
-- ✅ 校区坐标已配置：新校区 `0.0, 0.0`
+- ✅ 校区坐标已配置：默认校区 `0.0, 0.0`
 - ⚠️ **设备授权风控**：提交进入业务层后返回"更换手机频繁/设备授权"（管理措施），需辅导员在辅导猫后台「手机授权管理」为本机授权，或真机正常使用一段时间自动解除
 
 ## 技术说明
