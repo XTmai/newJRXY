@@ -36,9 +36,11 @@ except Exception:
 
 IOS_LOCAL_CAT_SECRET = 'REDACTED'          # XOR-0xbb 混淆提取（distribution 构建）
 IOS_AES_IV = bytes(range(1, 10)) + bytes(range(1, 8))   # 静态 IV @0x103b4f990
-IOS_DEVICE_ID = '00000000-0000-0000-0000-000000000000'  # 真机抓包（服务器按此绑定设备）
-IOS_WIS_DEVICE_ID = ('enc.app.aeb.v1.REDACTED/REDACTED/'
-                     'REDACTED')             # 真机设备指纹头
+# 原为本机真机抓包值，已脱敏留空。
+# IOS_DEVICE_ID 留空 -> 运行时生成随机 UUID（服务器按设备绑定账号，随机值可能触发风控，
+#   建议自行填入一个固定的真机 deviceId）；IOS_WIS_DEVICE_ID 留空 -> 不发送该请求头。
+IOS_DEVICE_ID = ''
+IOS_WIS_DEVICE_ID = ''
 IOS_UA = ('Mozilla/5.0 (iPhone; CPU iPhone OS 18_2 like Mac OS X) '
           'AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 '
           'cpdaily/9.9.22 wisedu/9.9.22')
@@ -151,8 +153,8 @@ class CpdailyClient:
         self.session = requests.session()
         self.session.headers = {'User-Agent': BASE_UA}
 
-        # iOS 协议: 固定使用真机抓包 deviceId（服务器把账号与设备绑定，频繁变化会触发风控）
-        self.device_id = IOS_DEVICE_ID
+        # iOS 协议: deviceId 未配置时随机生成（服务器把账号与设备绑定，频繁变化会触发风控）
+        self.device_id = IOS_DEVICE_ID or str(uuid.uuid4()).upper()
         self.user_id = ''
 
         self.campus_host = None   # https://example.campusphere.net/
@@ -619,7 +621,6 @@ class CpdailyClient:
             'CpdailyClientType': 'CPDAILY',
             'Accept': '*/*',
             'CacheTimeValue': '0',
-            'wisDeviceId': IOS_WIS_DEVICE_ID,
             'sessionTokenKey': session_token,
             'Accept-Language': 'zh-Hans-CN',
             'Content-Type': 'application/json',
@@ -627,6 +628,8 @@ class CpdailyClient:
             'User-Agent': IOS_UA,
             'CpdailyStandAlone': '0',
         }
+        if IOS_WIS_DEVICE_ID:
+            headers['wisDeviceId'] = IOS_WIS_DEVICE_ID
         # Cookie 必须包含登录票 MOD_AUTH_CAS（手动头会覆盖 session 自动携带，
         # 少了它服务端直接当未登录返回 HTML 登录页）
         cookie_parts = ['clientType=cpdaily_student', f'sessionToken={session_token}',

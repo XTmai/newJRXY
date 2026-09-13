@@ -21,7 +21,7 @@ def input_captcha(img_bytes):
     return input('[IAP] 验证码图片已保存 captcha.png，请输入验证码: ').strip()
 
 
-USER = sys.argv[1] if len(sys.argv) > 1 else '2024000000'
+USER = sys.argv[1] if len(sys.argv) > 1 else ''
 PWD = sys.argv[2] if len(sys.argv) > 2 else None
 if not PWD:
     import getpass
