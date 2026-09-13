@@ -9,3 +9,4 @@ config.yml
 auto_config.json
 auto_sign.log
 photos/
+key_extract/

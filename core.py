@@ -20,12 +20,9 @@ from requests_toolbelt import MultipartEncoder
 
 requests.packages.urllib3.disable_warnings(requests.packages.urllib3.exceptions.InsecureRequestWarning)
 
-# ==================== iOS first_v4 协议（逆向自 iOS CampusNext 9.9.22，已服务器验证） ====================
-# 链路: CDVMAMPHttp.sendEncryptPostRequest -> CryptUtil.aesEncryptForCat
-#       -> EncryptConstant.finalCatSecret -> CNAESCrypt.aesEncrypt:key:
-# finalCatSecret = interleave(ConstantKeyCrypt.localDisCatSecret + NSUserDefaults["catSecretKey"])
-#   其中 catSecretKey = getSecretKey 响应中的 catSecret（按租户固定）
-# AES: CCCrypt(AES128, CBC, PKCS7), keyLength=16, IV=原始字节 01..09,01..07
+# ==================== iOS first_v4 协议（服务端已验证） ====================
+# 请求体用 AES-128-CBC + PKCS7 加密后 base64 编码；
+# 密钥由「本地常量 + 服务端下发的租户密钥」交错重组得到，IV 为固定字节序列。
 try:
     import sys as _sys
     _sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'key_extract'))
@@ -34,9 +31,9 @@ try:
 except Exception:
     HAS_GSK = False
 
-IOS_LOCAL_CAT_SECRET = 'REDACTED'          # XOR-0xbb 混淆提取（distribution 构建）
-IOS_AES_IV = bytes(range(1, 10)) + bytes(range(1, 8))   # 静态 IV @0x103b4f990
-# 原为本机真机抓包值，已脱敏留空。
+IOS_LOCAL_CAT_SECRET = ''                  # 本地密钥常量（占位值，需自行填入）
+IOS_AES_IV = bytes(range(1, 10)) + bytes(range(1, 8))   # 静态 IV
+# 原为本机实测值，已脱敏留空。
 # IOS_DEVICE_ID 留空 -> 运行时生成随机 UUID（服务器按设备绑定账号，随机值可能触发风控，
 #   建议自行填入一个固定的真机 deviceId）；IOS_WIS_DEVICE_ID 留空 -> 不发送该请求头。
 IOS_DEVICE_ID = ''
@@ -50,7 +47,7 @@ IOS_MODEL = 'iPhone 16 Pro'
 
 
 def final_cat_secret(server_cat, local=IOS_LOCAL_CAT_SECRET):
-    """EncryptConstant.finalCatSecret: s=A+B -> 偶数位字符在前 + 奇数位在后"""
+    """密钥派生: s=A+B -> 偶数位字符在前 + 奇数位在后"""
     s = local + server_cat
     return s[0::2] + s[1::2]
 
@@ -65,8 +62,8 @@ def aes_v4_encrypt(data, key):
     return base64.b64encode(ct).decode()
 
 
-# 服务器密钥兜底缓存（实测本校按租户恒定：cpdailySecret=REDACTED, catSecret=REDACTED）
-FALLBACK_SECRETS = {'cpdailySecret': 'REDACTED', 'catSecret': 'REDACTED'}
+# 服务器密钥兜底缓存（占位值；密钥下发不可用时的回退）
+FALLBACK_SECRETS = {'cpdailySecret': '', 'catSecret': ''}
 
 
 def fetch_v4_secrets():
@@ -92,9 +89,7 @@ def des_encrypt(s, key='XCE927=='):
 
 
 def aes_encrypt(data, key='abcdfe0987612345'):
-    """AES-ECB 加密 (动态跟踪 验证: AES/ECB/PKCS7Padding, key=abcdfe0987612345)
-    9.9.11+ 版本已从 CBC 切换到 ECB 模式，无 IV。
-    """
+    """AES-ECB 加密（旧协议路径，9.9.11+ 使用，无 IV）"""
     aes = AES.new(key.encode(), AES.MODE_ECB)
     pad_len = AES.block_size - (len(data) % AES.block_size)
     data += chr(pad_len) * pad_len
@@ -144,9 +139,9 @@ class CpdailyClient:
         self.des_key = des_key
         self.aes_key = aes_key
         self.cookie_file = cookie_file
-        # 加密协议版本：示例大学等学校已禁用 first_v3（旧 key），须用 first_v4
+        # 加密协议版本：新版客户端已禁用 first_v3（旧 key），须用 first_v4
         self.sign_version = sign_version
-        # 协议实现: ios_v4 = iOS 9.9.22 逆向方案（服务器已验证）；android = 旧 ECB 方案
+        # 协议实现: ios_v4 = 新版客户端方案（服务器已验证）；android = 旧 ECB 方案
         self.protocol = 'ios_v4'
         self.campuses = dict(DEFAULT_CAMPUSES)
 
@@ -592,7 +587,7 @@ class CpdailyClient:
         return self._submit_android(form, lon, lat, address)
 
     def _submit_ios_v4(self, form, lon, lat, address):
-        """iOS first_v4 协议提交（逆向自 CampusNext 9.9.22，2026-09-03 服务器验证通过）"""
+        """iOS first_v4 协议提交（服务器验证通过）"""
         # 1) 领密钥并派生 finalCatSecret
         self.log('正在获取 first_v4 会话密钥...')
         _, server_cat = fetch_v4_secrets()
@@ -602,7 +597,7 @@ class CpdailyClient:
         # 2) bodyString = AES-128-CBC-PKCS7(base64)
         body_string = aes_v4_encrypt(json.dumps(form, ensure_ascii=False), aes_key)
 
-        # 3) 组装提交体（与 iOS 抓包结构一致）
+        # 3) 组装提交体
         session_token = self._session_token()
         tenant_id = self.school_id or ''
         submit_data = {
@@ -611,8 +606,8 @@ class CpdailyClient:
             'systemName': 'iOS', 'bodyString': body_string,
             'lat': lat, 'systemVersion': IOS_SYSTEM_VERSION,
             'appVersion': IOS_APP_VERSION, 'model': IOS_MODEL,
-            # sign 拼接格式逆向未完全确定，但服务端不校验（假值同样放行）；
-            # 按最接近逆向语义的格式生成: 排序后 values 串联 + key
+            # sign 拼接格式未完全确定，但服务端不校验（假值同样放行）；
+            # 按最接近协议语义的格式生成: 排序后 values 串联 + key
             'sign': md5(''.join(sorted(str(v) for v in form.values())) + body_string + aes_key),
         }
 

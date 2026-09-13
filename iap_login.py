@@ -1,6 +1,6 @@
 """今日校园 CLOUD(joinType=CLOUD) 学校的 IAP 登录实现
 
-2026-09-04 实测修正（示例大学，抓取 login/mobile.html 前端 JS 逆向）：
+2026-09-04 实测修正（网页版登录流程）：
 学校已升级登录接口，App 老流程（query 参数 + AES(salt) 密码）返回 FAIL_UPNOTMATCH，
 网页版实际流程为：
     1. GET  {host}iap/login?service=...     -> 302 建立 CONVERSATION 会话 + _2lBepC
